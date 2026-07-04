@@ -82,6 +82,7 @@ def iter_markdown_files(wiki_dir):
     """Yield markdown files from reports/wiki and web/wiki."""
     for root in wiki_roots(os.path.abspath(os.path.expanduser(wiki_dir))):
         if not os.path.isdir(root):
+            log("skipping non-existent root: %s" % root)
             continue
         for dirpath, _, filenames in os.walk(root):
             for filename in filenames:
@@ -146,6 +147,7 @@ def build_index(wiki_dir=None, db_path=None, full=False):
         if full:
             conn.execute("DROP TABLE IF EXISTS wiki_fts")
             conn.execute("DELETE FROM wiki_pages")
+            conn.execute("DELETE FROM kb_links")
             init_db(conn)
         indexed = 0
         scanned = 0

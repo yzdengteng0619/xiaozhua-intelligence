@@ -44,9 +44,10 @@ def search_terms(meta):
     return terms
 
 
-def _related_pages_from_conn(conn, page_path, top=5):
+def _related_pages_from_conn(conn, page_path, top=5, meta=None):
     """Find related pages using an existing connection (internal helper)."""
-    meta = extract_metadata(page_path)
+    if meta is None:
+        meta = extract_metadata(page_path)
     query = build_match_query(search_terms(meta))
     if not query:
         return []
@@ -70,7 +71,6 @@ def _related_pages_from_conn(conn, page_path, top=5):
         overlap = tag_overlap(meta["tags"], row[3])
         rank_component = 1.0 / (1.0 + abs(float(row[4] or 0.0)))
         score = rank_component + overlap
-        link_type = "cited" if index == 0 else "same_topic" if overlap > 0.5 else "same_industry" if meta["industry"] == row[2] else "related"
         results.append(
             {
                 "title": row[0],
@@ -79,10 +79,17 @@ def _related_pages_from_conn(conn, page_path, top=5):
                 "tags": row[3] or "",
                 "rank": row[4],
                 "score": score,
-                "link_type": link_type,
+                "link_type": "related",
             }
         )
     results.sort(key=lambda item: item["score"], reverse=True)
+    for idx, item in enumerate(results):
+        item["link_type"] = (
+            "cited" if idx == 0
+            else "same_topic" if item["score"] > 1.5
+            else "same_industry" if item["industry"] and item["industry"] == meta.get("industry")
+            else "related"
+        )
     return results[: int(top)]
 
 
@@ -148,7 +155,8 @@ def link_page(page_path, db_path=None, top=5):
     conn = connect(os.path.abspath(os.path.expanduser(db_path or get_db_path())))
     try:
         init_db(conn)
-        links = _related_pages_from_conn(conn, page_path, top)
+        meta = extract_metadata(page_path)
+        links = _related_pages_from_conn(conn, page_path, top, meta=meta)
         _store_links_to_conn(conn, page_path, links)
         conn.commit()
     finally:
@@ -173,14 +181,35 @@ def output_pages_from_job(job_path):
         data = read_json(manifest)
         values = data if isinstance(data, list) else data.get("pages", [])
         candidates.extend(str(item) for item in values)
-    return candidates
+    seen = set()
+    unique = []
+    for c in candidates:
+        normed = os.path.normpath(os.path.abspath(c))
+        if normed not in seen:
+            seen.add(normed)
+            unique.append(c)
+    return unique
 
 
 def link_job(job_path, db_path=None, top=5):
-    """Link all markdown output pages found for a job."""
+    """Link all markdown output pages found for a job (single connection)."""
+    pages = output_pages_from_job(job_path)
+    if not pages:
+        return {}
+    conn = connect(os.path.abspath(os.path.expanduser(db_path or get_db_path())))
     results = {}
-    for page in output_pages_from_job(job_path):
-        results[page] = link_page(page, db_path, top)
+    try:
+        init_db(conn)
+        for page in pages:
+            normed = os.path.normpath(os.path.abspath(page))
+            meta = extract_metadata(normed)
+            links = _related_pages_from_conn(conn, normed, top, meta=meta)
+            _store_links_to_conn(conn, normed, links)
+            conn.commit()
+            append_related_reading(normed, links)
+            results[page] = links
+    finally:
+        conn.close()
     return results
 
 

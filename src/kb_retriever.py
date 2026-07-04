@@ -12,7 +12,7 @@ import os
 import sqlite3
 import sys
 
-from kb_common import ensure_dir, get_db_path, now_iso, read_json
+from kb_common import ensure_dir, get_db_path, log, now_iso, read_json
 from kb_indexer import connect, init_db
 
 
@@ -66,7 +66,8 @@ def search(keywords, db_path=None, top=10):
             """,
             (query, int(top)),
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        log("WARN: FTS5 query failed: %s" % exc)
         rows = []
     finally:
         conn.close()
