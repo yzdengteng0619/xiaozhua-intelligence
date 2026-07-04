@@ -41,32 +41,31 @@ def classify_basename(basename, data_json):
     for pattern, source in PATTERNS:
         if pattern.search(basename):
             return source
-    
+
     # Pattern 6: data JSON中的字段
     try:
         data = json.loads(data_json) if data_json else {}
-    except:
+    except (json.JSONDecodeError, TypeError):
         data = {}
-    
+
     # 检查 wiki_path（所有PDF管线产出的wiki_path都在 reports/wiki/ 下）
     wiki_path = data.get("wiki_path", "")
     if "research/rounds" in wiki_path:
         return "web_research"
     if "industry_rotation" in wiki_path:
         return "industry_rotation"
-    
+
     # 检查 summarized_by
     summarized_by = data.get("summarized_by", "")
     if "mimo" in summarized_by.lower():
         return "mimo_enrichment"
-    
+
     # wiki_path 兜底：reports/wiki/ 下都是 PDF 管线产出
-    wiki_path = data.get("wiki_path", "")
     if "reports/wiki/" in wiki_path:
         return "ocr_pipeline"
     if "web/wiki/" in wiki_path:
         return "web_research"
-    
+
     return None  # 无法分类
 
 def main():
@@ -122,20 +121,22 @@ def main():
             # 读取现有data，更新source_type字段
             data_json = conn.execute(
                 "SELECT data FROM files WHERE id=?", (row_id,)
-            ).fetchone()[0]
+            ).fetchone()
+            if not data_json:
+                continue
             try:
-                data = json.loads(data_json) if data_json else {}
-            except:
+                data = json.loads(data_json[0]) if data_json[0] else {}
+            except (json.JSONDecodeError, TypeError):
                 data = {}
             data["source_type"] = source
             data["source_fixed_at"] = now
-            
+
             conn.execute(
                 "UPDATE files SET source_type=?, data=? WHERE id=?",
                 (source, json.dumps(data, ensure_ascii=False), row_id)
             )
             updated += 1
-        
+
         conn.commit()
         print(f"Updated: {updated}")
         
