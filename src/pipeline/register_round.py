@@ -43,7 +43,7 @@ def register_file(basename, wiki_path, source_type, conn=None):
         existing = conn.execute(
             "SELECT id, data FROM files WHERE basename=?", (basename,)
         ).fetchone()
-        
+
         now = datetime.now().isoformat()
         data = {
             "basename": basename,
@@ -51,9 +51,12 @@ def register_file(basename, wiki_path, source_type, conn=None):
             "source_type": source_type,
             "registered_at": now,
         }
-        
+
         if existing:
-            old_data = json.loads(existing[1]) if existing[1] else {}
+            try:
+                old_data = json.loads(existing[1]) if existing[1] else {}
+            except (json.JSONDecodeError, TypeError):
+                old_data = {}
             # 保留已有评分
             if old_data.get("score_model") and old_data["score_model"] != "pending":
                 data["score"] = old_data["score"]
