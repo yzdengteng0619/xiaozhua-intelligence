@@ -47,28 +47,64 @@ def summarize(content, limit=500):
     return (content or "")[:limit].strip()
 
 
+def _is_short_term(term):
+    """Check if a term is too short for FTS5 trigram tokenizer (< 3 chars)."""
+    clean = term.strip().strip('"').strip()
+    return len(clean) < 3
+
+def _fallback_like_search(conn, keywords, top):
+    """LIKE-based fallback for terms too short for FTS5 trigram."""
+    terms = coerce_keywords(keywords)
+    if not terms:
+        return []
+    # Build LIKE conditions for short terms only
+    conditions = []
+    params = []
+    for term in terms:
+        if _is_short_term(term):
+            clean = term.strip().strip('"')
+            conditions.append("(p.title LIKE ? OR p.tags LIKE ?)")
+            params.extend(["%" + clean + "%", "%" + clean + "%"])
+    if not conditions:
+        return []
+    where = " OR ".join(conditions)
+    params.append(int(top))
+    rows = conn.execute(
+        "SELECT p.title, p.path, p.industry, p.tags, p.content, 0.0 AS rank "
+        "FROM wiki_pages p WHERE " + where + " LIMIT ?",
+        params,
+    ).fetchall()
+    return rows
+
 def search(keywords, db_path=None, top=10):
     """Search the KB index and return ranked result dictionaries."""
-    query = build_match_query(keywords)
-    if not query:
-        return []
+    terms = coerce_keywords(keywords)
+    short = [t for t in terms if _is_short_term(t)]
+    long = [t for t in terms if not _is_short_term(t)]
     conn = connect(os.path.abspath(os.path.expanduser(db_path or get_db_path())))
     try:
         init_db(conn)
-        rows = conn.execute(
-            """
-            SELECT p.title, p.path, p.industry, p.tags, p.content, bm25(wiki_fts) AS rank
-            FROM wiki_fts
-            JOIN wiki_pages p ON p.id = wiki_fts.rowid
-            WHERE wiki_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """,
-            (query, int(top)),
-        ).fetchall()
-    except sqlite3.OperationalError as exc:
-        log("WARN: FTS5 query failed: %s" % exc)
         rows = []
+        # FTS5 for long terms
+        if long:
+            query = build_match_query(long)
+            try:
+                rows = conn.execute(
+                    "SELECT p.title, p.path, p.industry, p.tags, p.content, bm25(wiki_fts) AS rank "
+                    "FROM wiki_fts JOIN wiki_pages p ON p.id = wiki_fts.rowid "
+                    "WHERE wiki_fts MATCH ? ORDER BY rank LIMIT ?",
+                    (query, int(top)),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                log("WARN: FTS5 query failed: %s" % exc)
+        # LIKE fallback for short terms
+        if short:
+            fallback_rows = _fallback_like_search(conn, keywords, top)
+            existing_paths = {r[1] for r in rows}
+            for fr in fallback_rows:
+                if fr[1] not in existing_paths:
+                    rows.append(fr)
+        rows = rows[:int(top)]
     finally:
         conn.close()
     return [
@@ -130,7 +166,11 @@ def retrieve(keywords, db_path=None, top=10, output_path=None):
 
 def retrieve_for_job(job_path, db_path=None, top=10):
     """Read job keywords and write ``context/kb_retrieval.md`` under the job."""
-    spec = read_json(os.path.join(job_path, "job_spec.json"))
+    spec_path = os.path.join(job_path, "job_spec.json")
+    if not os.path.exists(spec_path):
+        log("WARN: job_spec.json not found in %s" % job_path)
+        return []
+    spec = read_json(spec_path)
     output_path = os.path.join(job_path, "context", "kb_retrieval.md")
     return retrieve(spec.get("keywords", []), db_path, top, output_path)
 
