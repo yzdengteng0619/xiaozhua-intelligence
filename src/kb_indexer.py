@@ -144,8 +144,9 @@ def build_index(wiki_dir=None, db_path=None, full=False):
         init_db(conn)
         last_index = 0.0 if full else float(metadata_value(conn, "last_index_time") or 0.0)
         if full:
-            conn.execute("DELETE FROM wiki_fts")
+            conn.execute("DROP TABLE IF EXISTS wiki_fts")
             conn.execute("DELETE FROM wiki_pages")
+            init_db(conn)
         indexed = 0
         scanned = 0
         for filepath in iter_markdown_files(wiki_dir):
@@ -153,6 +154,9 @@ def build_index(wiki_dir=None, db_path=None, full=False):
             if full or os.path.getmtime(filepath) > last_index:
                 upsert_page(conn, filepath)
                 indexed += 1
+                if indexed % 1000 == 0:
+                    conn.commit()
+                    log("indexed %d pages..." % indexed)
         set_metadata(conn, "last_index_time", start)
         set_metadata(conn, "last_index_at", now_iso())
         conn.commit()

@@ -44,7 +44,7 @@ def build_match_query(keywords):
 
 def summarize(content, limit=500):
     """Return a compact first-N-character summary."""
-    return " ".join((content or "").split())[:limit]
+    return (content or "")[:limit].strip()
 
 
 def search(keywords, db_path=None, top=10):

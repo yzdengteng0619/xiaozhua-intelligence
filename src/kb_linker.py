@@ -44,15 +44,13 @@ def search_terms(meta):
     return terms
 
 
-def related_pages(page_path, db_path=None, top=5):
-    """Find related pages for a source page, excluding the source itself."""
+def _related_pages_from_conn(conn, page_path, top=5):
+    """Find related pages using an existing connection (internal helper)."""
     meta = extract_metadata(page_path)
     query = build_match_query(search_terms(meta))
     if not query:
         return []
-    conn = connect(os.path.abspath(os.path.expanduser(db_path or get_db_path())))
     try:
-        init_db(conn)
         rows = conn.execute(
             """
             SELECT p.title, p.path, p.industry, p.tags, bm25(wiki_fts) AS rank
@@ -62,12 +60,10 @@ def related_pages(page_path, db_path=None, top=5):
             ORDER BY rank
             LIMIT ?
             """,
-            (query, os.path.abspath(page_path), max(int(top) * 3, int(top))),
+            (query, os.path.normpath(os.path.abspath(page_path)), max(int(top) * 3, int(top))),
         ).fetchall()
     except sqlite3.OperationalError:
         rows = []
-    finally:
-        conn.close()
 
     results = []
     for index, row in enumerate(rows):
@@ -90,22 +86,38 @@ def related_pages(page_path, db_path=None, top=5):
     return results[: int(top)]
 
 
+def _store_links_to_conn(conn, page_path, links):
+    """Upsert links using an existing connection (internal helper)."""
+    for link in links:
+        conn.execute(
+            """
+            INSERT INTO kb_links(source_path, target_path, score, link_type, created_at)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(source_path, target_path) DO UPDATE SET
+                score = excluded.score,
+                link_type = excluded.link_type
+            """,
+            (os.path.normpath(os.path.abspath(page_path)), link["path"], float(link["score"]), link["link_type"], now_iso()),
+        )
+
+
+def related_pages(page_path, db_path=None, top=5):
+    """Find related pages for a source page, excluding the source itself."""
+    page_path = os.path.normpath(os.path.abspath(page_path))
+    conn = connect(os.path.abspath(os.path.expanduser(db_path or get_db_path())))
+    try:
+        init_db(conn)
+        return _related_pages_from_conn(conn, page_path, top)
+    finally:
+        conn.close()
+
+
 def store_links(page_path, db_path, links):
     """Upsert related-page links into ``kb_links``."""
     conn = connect(os.path.abspath(os.path.expanduser(db_path or get_db_path())))
     try:
         init_db(conn)
-        for link in links:
-            conn.execute(
-                """
-                INSERT INTO kb_links(source_path, target_path, score, link_type, created_at)
-                VALUES(?, ?, ?, ?, ?)
-                ON CONFLICT(source_path, target_path) DO UPDATE SET
-                    score = excluded.score,
-                    link_type = excluded.link_type
-                """,
-                (os.path.abspath(page_path), link["path"], float(link["score"]), link["link_type"], now_iso()),
-            )
+        _store_links_to_conn(conn, page_path, links)
         conn.commit()
     finally:
         conn.close()
@@ -131,10 +143,16 @@ def append_related_reading(page_path, links):
 
 
 def link_page(page_path, db_path=None, top=5):
-    """Link one wiki page to related existing pages."""
-    page_path = os.path.abspath(page_path)
-    links = related_pages(page_path, db_path, top)
-    store_links(page_path, db_path, links)
+    """Link one wiki page to related existing pages (single transaction)."""
+    page_path = os.path.normpath(os.path.abspath(page_path))
+    conn = connect(os.path.abspath(os.path.expanduser(db_path or get_db_path())))
+    try:
+        init_db(conn)
+        links = _related_pages_from_conn(conn, page_path, top)
+        _store_links_to_conn(conn, page_path, links)
+        conn.commit()
+    finally:
+        conn.close()
     append_related_reading(page_path, links)
     return links
 
