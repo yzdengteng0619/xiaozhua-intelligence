@@ -259,7 +259,7 @@ def direction_from_spec(spec):
     base_keywords = coerce_list(spec.get("keywords"))
     for objective in coerce_list(spec.get("objective")) or ["综合研究"]:
         extra = OBJECTIVE_KEYWORDS.get(objective, [objective])
-        topic = "%s%s" % (spec.get("direction") or spec.get("project_id"), objective)
+        topic = "%s - %s" % (spec.get("direction") or spec.get("project_id"), objective)
         merged = []
         for item in base_keywords + extra:
             if item and item not in merged:

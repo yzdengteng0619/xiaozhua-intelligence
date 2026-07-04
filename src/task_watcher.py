@@ -93,7 +93,8 @@ class FileLock:
                 self.handle = None
                 return False
             return True
-        return True
+        # No locking mechanism available - fail loudly instead of silent degradation
+        raise RuntimeError("No file locking mechanism available (fcntl or msvcrt required)")
 
     def __exit__(self, exc_type, exc, tb):
         if not self.handle:
@@ -216,6 +217,7 @@ def process_job(job_path, router_path=None):
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
+        timeout=status.get("timeout", 3600),
     )
     status = load_status(job_path)
     if proc.returncode == 0:
