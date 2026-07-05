@@ -30,6 +30,11 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.expanduser("~/clawd/scripts"))
 from ll_longcat import call_ll
 from web_research_db import register_web_research
+try:
+    from wiki_inventory import get_scan_plan, build_inventory
+except ImportError:
+    get_scan_plan = None
+    build_inventory = None
 
 BJT = timezone(timedelta(hours=8))
 
@@ -350,10 +355,44 @@ def main():
     effective_industries, is_focus = get_effective_industries()
     industry_id, industry_name, _ = effective_industries[cp["industry_idx"] % len(effective_industries)]
     
-    log(f"📋 行业轮动启动")
-    log(f"   当前: {industry_name} (维度{cp['dim_idx']+1}/{len(RESEARCH_DIMENSIONS)})")
-    log(f"   已完成: {cp['total_rounds']}轮")
-    log(f"   LongCat限额: 5M token/天，本脚本用量可控")
+    # ===== 知识库覆盖诊断 =====
+    scan_plan = None
+    if get_scan_plan:
+        try:
+            scan_plan = get_scan_plan(industry_id)
+        except Exception as e:
+            log(f"⚠️ 覆盖诊断失败: {e}")
+    
+    if scan_plan:
+        strategy = scan_plan.get("strategy", "build")
+        coverage = scan_plan.get("coverage_level", "unknown")
+        total = scan_plan.get("total_existing", 0)
+        log(f"📋 行业轮动启动")
+        log(f"   当前: {industry_name} (维度{cp['dim_idx']+1}/{len(RESEARCH_DIMENSIONS)})")
+        log(f"   覆盖: {coverage} ({total}页) → 策略: {strategy}")
+        log(f"   已完成: {cp['total_rounds']}轮")
+        
+        # 覆盖诊断决策
+        if strategy == "maintain" and not deep:
+            log(f"   ✅ 覆盖充足，跳过L1扫描（加 --deep 强制L2深挖）")
+            # 仍推进checkpoint到下一行业
+            cp["dim_idx"] += 1
+            if cp["dim_idx"] >= len(RESEARCH_DIMENSIONS):
+                cp["dim_idx"] = 0
+                cp["industry_idx"] = (cp["industry_idx"] + 1) % len(effective_industries)
+            save_checkpoint(cp)
+            return
+        elif strategy in ("fill", "build"):
+            log(f"   🔧 覆盖不足，全量5维度扫描")
+            cp["dim_idx"] = 0  # 从第1维度开始
+        elif strategy in ("deepen", "refresh"):
+            focus = scan_plan.get("focus_dimensions", [])
+            skip = scan_plan.get("skip_dimensions", [])
+            log(f"   🔬 重点维度: {focus} | 跳过: {skip}")
+    else:
+        log(f"📋 行业轮动启动（无覆盖诊断）")
+        log(f"   当前: {industry_name} (维度{cp['dim_idx']+1}/{len(RESEARCH_DIMENSIONS)})")
+        log(f"   已完成: {cp['total_rounds']}轮")
     
     # 跑一个维度
     start = time.time()
