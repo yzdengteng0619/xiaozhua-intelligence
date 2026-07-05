@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 """
-小爪行业轮动研究脚本 v1
+小爪行业轮动研究脚本 v1.1
 ============================
 参考小虾行业轮动设计，适配小爪环境。
 
 11个L1行业按序循环，每次cron触发跑1个行业的1个维度。
 每次调用: 搜索5-8条查询 → MiniMax分析 → 写入wiki知识库
 
-运行方式:
-  python3 industry_rotation_xiaozhua.py        # 自动运行（检查时间窗口）
-  python3 industry_rotation_xiaozhua.py --force # 忽略时间检查
+L2 深挖层（v1.1新增）:
+  加 --deep 参数，L1完成后追加 FirstData 权威源查询 + 深度分析
+  L2 产出存 wiki/{industry}/deep/，不覆盖L1
+  FirstData 不可用时静默降级
 
-cron: 每2h触发一次，时间窗口 00:00-14:00 UTC（08:00-22:00 BJT）
+运行方式:
+  python3 industry_rotation_xiaozhua.py          # 自动运行（检查时间窗口），只跑L1
+  python3 industry_rotation_xiaozhua.py --force   # 忽略时间检查，只跑L1
+  python3 industry_rotation_xiaozhua.py --deep    # 跑L1+L2（建议每天1-2次）
+  python3 industry_rotation_xiaozhua.py --force --deep  # 忽略时间检查，跑L1+L2
+
+cron建议:
+  每2h触发一次（只跑L1）: python3 industry_rotation_xiaozhua.py
+  每天2次深挖（跑L1+L2）: python3 industry_rotation_xiaozhua.py --deep
+  时间窗口 00:00-14:00 UTC（08:00-22:00 BJT）
 """
 
 import os, sys, json, time, subprocess
@@ -236,9 +246,15 @@ confidence: medium
     
     return filepath
 
-def run_one_dimension(cp):
-    """运行一个行业的一个维度"""
-    industry_id, industry_name, industry_desc = L1_INDUSTRIES[cp["industry_idx"]]
+def run_one_dimension(cp, deep=False):
+    """运行一个行业的一个维度
+    
+    Args:
+        cp: checkpoint dict
+        deep: 是否在 L1 完成后跑 L2 深挖层
+    """
+    effective_industries, _ = get_effective_industries()
+    industry_id, industry_name, industry_desc = effective_industries[cp["industry_idx"] % len(effective_industries)]
     dim_id, dim_name, dim_desc = RESEARCH_DIMENSIONS[cp["dim_idx"]]
     
     log(f"🎯 {industry_name} → {dim_name}")
@@ -278,6 +294,30 @@ def run_one_dimension(cp):
     filepath = save_to_wiki(industry_id, industry_name, dim_name, analysis, queries)
     log(f"  ✅ 已保存到 {filepath}")
     
+    # Step 4.5: L2 深挖层（可选）
+    if deep:
+        try:
+            from industry_rotation_l2 import run_l2_deep
+            log(f"  🔬 L2 深挖层启动...")
+            l2_result = run_l2_deep(
+                industry_id=industry_id,
+                industry_name=industry_name,
+                dim_name=dim_name,
+                l1_analysis=analysis,
+                queries=queries,
+                call_model_fn=call_model,
+            )
+            if l2_result["status"] == "ok":
+                log(f"  🔬 L2 完成: {l2_result['data_points']}数据点, {l2_result['sources_found']}权威源")
+            elif l2_result["status"] == "skipped":
+                log(f"  🔬 L2 跳过: {l2_result.get('data_points', 0)}数据点")
+            else:
+                log(f"  🔬 L2 异常但L1不受影响")
+        except ImportError:
+            log(f"  ⚠️ industry_rotation_l2 模块不可用，跳过 L2")
+        except Exception as e:
+            log(f"  ⚠️ L2 异常（不阻塞L1）: {e}")
+    
     # Step 5: 更新checkpoint
     cp["dim_idx"] += 1
     if cp["dim_idx"] >= len(RESEARCH_DIMENSIONS):
@@ -297,7 +337,8 @@ def run_one_dimension(cp):
 
 def main():
     force = "--force" in sys.argv
-    
+    deep = "--deep" in sys.argv
+
     # 时间窗口检查
     if not force and not in_time_window():
         utc_now = datetime.now(timezone.utc)
@@ -316,7 +357,7 @@ def main():
     
     # 跑一个维度
     start = time.time()
-    ok = run_one_dimension(cp)
+    ok = run_one_dimension(cp, deep=deep)
     elapsed = time.time() - start
     
     if ok:
